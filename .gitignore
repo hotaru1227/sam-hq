@@ -1,0 +1,8 @@
+/data
+/segment_anything.egg-info
+/pretrained_checkpoint
+/hq_checkpoint
+**/output
+**.pth
+**/__pycache__
+**.png

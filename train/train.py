@@ -3,11 +3,13 @@
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-
+import torch
+# torch.cuda.set_device(4)
 import os
+# os.environ["CUDA_VISIBLE_DEVICES"]="4"
 import argparse
 import numpy as np
-import torch
+
 import torch.optim as optim
 import torch.nn as nn
 import torch.nn.functional as F
@@ -23,6 +25,13 @@ from segment_anything_training.modeling import TwoWayTransformer, MaskDecoder
 from utils.dataloader import get_im_gt_name_dict, create_dataloaders, RandomHFlip, Resize, LargeScaleJitter
 from utils.loss_mask import loss_masks
 import utils.misc as misc
+
+import warnings
+from stats_utils import get_dice_1,get_fast_aji_plus,get_fast_pq,get_fast_aji
+
+# 忽略所有警告消息
+warnings.simplefilter("ignore")
+
 
 
 
@@ -78,9 +87,8 @@ class MaskDecoderHQ(MaskDecoder):
                         iou_head_depth= 3,
                         iou_head_hidden_dim= 256,)
         assert model_type in ["vit_b","vit_l","vit_h"]
-        
-        checkpoint_dict = {"vit_b":"pretrained_checkpoint/sam_vit_b_maskdecoder.pth",
-                           "vit_l":"pretrained_checkpoint/sam_vit_l_maskdecoder.pth",
+        checkpoint_dict = {"vit_b":"/data/hotaru/projects/sam-hq/pretrained_checkpoint/sam_vit_b_maskdecoder.pth",
+                           "vit_l":"/data/hotaru/projects/sam-hq/pretrained_checkpoint/sam_vit_l_maskdecoder.pth",
                            'vit_h':"pretrained_checkpoint/sam_vit_h_maskdecoder.pth"}
         checkpoint_path = checkpoint_dict[model_type]
         self.load_state_dict(torch.load(checkpoint_path))
@@ -271,6 +279,8 @@ def show_box(box, ax):
 
 def get_args_parser():
     parser = argparse.ArgumentParser('HQ-SAM', add_help=False)
+    parser.add_argument('--gpu', default=4, type=int)
+    
 
     parser.add_argument("--output", type=str, required=True, 
                         help="Path to the directory where masks and checkpoints will be output")
@@ -287,7 +297,7 @@ def get_args_parser():
     parser.add_argument('--lr_drop_epoch', default=10, type=int)
     parser.add_argument('--max_epoch_num', default=12, type=int)
     parser.add_argument('--input_size', default=[1024,1024], type=list)
-    parser.add_argument('--batch_size_train', default=4, type=int)
+    parser.add_argument('--batch_size_train', default=2, type=int)
     parser.add_argument('--batch_size_valid', default=1, type=int)
     parser.add_argument('--model_save_fre', default=1, type=int)
 
@@ -307,7 +317,7 @@ def get_args_parser():
     return parser.parse_args()
 
 
-def main(net, train_datasets, valid_datasets, args):
+def main(net, train_datasets, valid_datasets,test_datasets, args):
 
     misc.init_distributed_mode(args)
     print('world size: {}'.format(args.world_size))
@@ -342,6 +352,14 @@ def main(net, train_datasets, valid_datasets, args):
                                                           batch_size=args.batch_size_valid,
                                                           training=False)
     print(len(valid_dataloaders), " valid dataloaders created")
+    test_im_gt_list = get_im_gt_name_dict(test_datasets, flag="test")
+    test_dataloaders, test_datasets = create_dataloaders(test_im_gt_list,
+                                                          my_transforms = [
+                                                                        Resize(args.input_size)
+                                                                    ],
+                                                          batch_size=args.batch_size_valid,
+                                                          training=False)
+    print(len(test_dataloaders), " test dataloaders created")
     
     ### --- Step 2: DistributedDataParallel---
     if torch.cuda.is_available():
@@ -370,7 +388,7 @@ def main(net, train_datasets, valid_datasets, args):
             else:
                 net_without_ddp.load_state_dict(torch.load(args.restore_model,map_location="cpu"))
     
-        evaluate(args, net, sam, valid_dataloaders, args.visualize)
+        evaluate(args, net, sam, test_dataloaders, args.visualize)
 
 
 def train(args, net, optimizer, train_dataloaders, valid_dataloaders, lr_scheduler):
@@ -510,6 +528,59 @@ def compute_iou(preds, target):
         iou = iou + misc.mask_iou(postprocess_preds[i],target[i])
     return iou / len(preds)
 
+
+def compute_dice(preds, target):
+    assert target.shape[1] == 1, 'only support one mask per image now'
+    if(preds.shape[2]!=target.shape[2] or preds.shape[3]!=target.shape[3]):
+        postprocess_preds = F.interpolate(preds, size=target.size()[2:], mode='bilinear', align_corners=False)
+        # print(preds.shape,target.shape)
+        # print(postprocess_preds.shape,target.shape)
+    else:
+        postprocess_preds = preds
+    dice = 0
+    for i in range(0,len(preds)):
+        dice = dice + misc.get_dice_1(target[i],postprocess_preds[i])
+        print(dice)
+    return dice / len(preds)
+
+def compute_aji(preds, target):
+    assert target.shape[1] == 1, 'only support one mask per image now'
+    if(preds.shape[2]!=target.shape[2] or preds.shape[3]!=target.shape[3]):
+        postprocess_preds = F.interpolate(preds, size=target.size()[2:], mode='bilinear', align_corners=False)
+    else:
+        postprocess_preds = preds
+    aji = 0
+    for i in range(0,len(preds)):
+        aji = aji + misc.get_fast_aji(target[i],postprocess_preds[i])
+    return aji / len(preds)
+
+def compute_aji_plus(preds, target):
+    assert target.shape[1] == 1, 'only support one mask per image now'
+    if(preds.shape[2]!=target.shape[2] or preds.shape[3]!=target.shape[3]):
+        postprocess_preds = F.interpolate(preds, size=target.size()[2:], mode='bilinear', align_corners=False)
+    else:
+        postprocess_preds = preds
+    aji_p = 0
+    for i in range(0,len(preds)):
+        aji_p = aji_p + misc.get_fast_aji_plus(target[i],postprocess_preds[i])
+    return aji_p / len(preds)
+
+def compute_pq(preds, target):
+    assert target.shape[1] == 1, 'only support one mask per image now'
+    if(preds.shape[2]!=target.shape[2] or preds.shape[3]!=target.shape[3]):
+        postprocess_preds = F.interpolate(preds, size=target.size()[2:], mode='bilinear', align_corners=False)
+    else:
+        postprocess_preds = preds
+    dq = 0
+    sq = 0
+    pq = 0
+    for i in range(0,len(preds)):
+        [dq_tmp,sq_tmp,pq_tmp],_ =  misc.get_fast_pq(target[i],postprocess_preds[i])
+        dq+=dq_tmp
+        sq+=sq_tmp
+        pq+=pq_tmp
+    return dq / len(preds) , sq / len(preds),pq / len(preds)
+
 def compute_boundary_iou(preds, target):
     assert target.shape[1] == 1, 'only support one mask per image now'
     if(preds.shape[2]!=target.shape[2] or preds.shape[3]!=target.shape[3]):
@@ -583,6 +654,11 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
 
             iou = compute_iou(masks_hq,labels_ori)
             boundary_iou = compute_boundary_iou(masks_hq,labels_ori)
+            #添加评价指标
+            dice = compute_dice(masks_hq,labels_ori)
+            aji = compute_aji(masks_hq,labels_ori)
+            aji_p = compute_aji_plus(masks_hq,labels_ori)
+            dq, sq, pq= compute_pq(masks_hq,labels_ori)
 
             if visualize:
                 print("visualize")
@@ -600,7 +676,10 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
 
             loss_dict = {"val_iou_"+str(k): iou, "val_boundary_iou_"+str(k): boundary_iou}
             loss_dict_reduced = misc.reduce_dict(loss_dict)
-            metric_logger.update(**loss_dict_reduced)
+            metric_logger.update(**loss_dict)
+            metrics_dict = {"dice_"+str(k): dice,"aji_"+str(k): aji,"aji_p_"+str(k): aji_p,"dq_"+str(k): dq,"sq_"+str(k): sq,"pq_"+str(k): pq}
+            metrics_dict_reduced = misc.reduce_dict(metrics_dict)
+            metric_logger.update(**metrics_dict)
 
 
         print('============================')
@@ -618,77 +697,100 @@ if __name__ == "__main__":
 
     ### --------------- Configuring the Train and Valid datasets ---------------
 
+    #原始数据集
+    '''
+    原始的数据集
+    
     dataset_dis = {"name": "DIS5K-TR",
-                 "im_dir": "./data/DIS5K/DIS-TR/im",
-                 "gt_dir": "./data/DIS5K/DIS-TR/gt",
+                 "im_dir": "/data/hotaru/projects/sam-hq/data/DIS5K/DIS-TR/im",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/DIS5K/DIS-TR/gt",
                  "im_ext": ".jpg",
                  "gt_ext": ".png"}
 
     dataset_thin = {"name": "ThinObject5k-TR",
-                 "im_dir": "./data/thin_object_detection/ThinObject5K/images_train",
-                 "gt_dir": "./data/thin_object_detection/ThinObject5K/masks_train",
+                 "im_dir": "/data/hotaru/projects/sam-hq/data/thin_object_detection/ThinObject5K/images_train",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/thin_object_detection/ThinObject5K/masks_train",
                  "im_ext": ".jpg",
                  "gt_ext": ".png"}
 
     dataset_fss = {"name": "FSS",
-                 "im_dir": "./data/cascade_psp/fss_all",
-                 "gt_dir": "./data/cascade_psp/fss_all",
+                 "im_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/fss_all",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/fss_all",
                  "im_ext": ".jpg",
                  "gt_ext": ".png"}
 
     dataset_duts = {"name": "DUTS-TR",
-                 "im_dir": "./data/cascade_psp/DUTS-TR",
-                 "gt_dir": "./data/cascade_psp/DUTS-TR",
+                 "im_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/DUTS-TR",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/DUTS-TR",
                  "im_ext": ".jpg",
                  "gt_ext": ".png"}
 
     dataset_duts_te = {"name": "DUTS-TE",
-                 "im_dir": "./data/cascade_psp/DUTS-TE",
-                 "gt_dir": "./data/cascade_psp/DUTS-TE",
+                 "im_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/DUTS-TE",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/DUTS-TE",
                  "im_ext": ".jpg",
                  "gt_ext": ".png"}
 
     dataset_ecssd = {"name": "ECSSD",
-                 "im_dir": "./data/cascade_psp/ecssd",
-                 "gt_dir": "./data/cascade_psp/ecssd",
+                 "im_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/ecssd",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/ecssd",
                  "im_ext": ".jpg",
                  "gt_ext": ".png"}
 
     dataset_msra = {"name": "MSRA10K",
-                 "im_dir": "./data/cascade_psp/MSRA_10K",
-                 "gt_dir": "./data/cascade_psp/MSRA_10K",
+                 "im_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/MSRA_10K",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/MSRA_10K",
                  "im_ext": ".jpg",
                  "gt_ext": ".png"}
 
     # valid set
     dataset_coift_val = {"name": "COIFT",
-                 "im_dir": "./data/thin_object_detection/COIFT/images",
-                 "gt_dir": "./data/thin_object_detection/COIFT/masks",
+                 "im_dir": "/data/hotaru/projects/sam-hq/data/thin_object_detection/COIFT/images",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/thin_object_detection/COIFT/masks",
                  "im_ext": ".jpg",
                  "gt_ext": ".png"}
 
     dataset_hrsod_val = {"name": "HRSOD",
-                 "im_dir": "./data/thin_object_detection/HRSOD/images",
-                 "gt_dir": "./data/thin_object_detection/HRSOD/masks_max255",
+                 "im_dir": "/data/hotaru/projects/sam-hq/data/thin_object_detection/HRSOD/images",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/thin_object_detection/HRSOD/masks_max255",
                  "im_ext": ".jpg",
                  "gt_ext": ".png"}
 
     dataset_thin_val = {"name": "ThinObject5k-TE",
-                 "im_dir": "./data/thin_object_detection/ThinObject5K/images_test",
-                 "gt_dir": "./data/thin_object_detection/ThinObject5K/masks_test",
+                 "im_dir": "/data/hotaru/projects/sam-hq/data/thin_object_detection/ThinObject5K/images_test",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/thin_object_detection/ThinObject5K/masks_test",
                  "im_ext": ".jpg",
                  "gt_ext": ".png"}
 
     dataset_dis_val = {"name": "DIS5K-VD",
-                 "im_dir": "./data/DIS5K/DIS-VD/im",
-                 "gt_dir": "./data/DIS5K/DIS-VD/gt",
+                 "im_dir": "/data/hotaru/projects/sam-hq/data/DIS5K/DIS-VD/im",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/DIS5K/DIS-VD/gt",
                  "im_ext": ".jpg",
                  "gt_ext": ".png"}
 
-    train_datasets = [dataset_dis, dataset_thin, dataset_fss, dataset_duts, dataset_duts_te, dataset_ecssd, dataset_msra]
-    valid_datasets = [dataset_dis_val, dataset_coift_val, dataset_hrsod_val, dataset_thin_val] 
+    '''
 
+
+    dataset_cpm17 = {"name": "CPM-17",
+                 "im_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Images",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_png",
+                 "im_ext": ".png",
+                 "gt_ext": ".png"}
+    dataset_cpm17_val = {"name": "CPM-17",
+                 "im_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Images",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_png",
+                 "im_ext": ".png",
+                 "gt_ext": ".png"}
+    dataset_cpm17_test = {"name": "CPM-17",
+                 "im_dir": "/data/hotaru/projects/sam-hq/data/cpm17/test/Images",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/test/Labels_binary_png",
+                 "im_ext": ".png",
+                 "gt_ext": ".png"}
+
+    train_datasets = [dataset_cpm17]
+    valid_datasets = [dataset_cpm17_val] 
+    test_datasets = [dataset_cpm17_test] 
     args = get_args_parser()
     net = MaskDecoderHQ(args.model_type) 
 
-    main(net, train_datasets, valid_datasets, args)
+    main(net, train_datasets, valid_datasets,test_datasets, args)
