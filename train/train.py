@@ -8,6 +8,7 @@ import torch
 import os
 # os.environ["CUDA_VISIBLE_DEVICES"]="4"
 import argparse
+from skimage import measure
 import numpy as np
 
 import torch.optim as optim
@@ -28,8 +29,9 @@ import utils.misc as misc
 
 import warnings
 from stats_utils import get_dice_1,get_fast_aji_plus,get_fast_pq,get_fast_aji
-
-from .utils.post_process import process
+from utils.postproc_other import process
+# from .utils.post_process import process
+# from .utils import post_process 
 # 忽略所有警告消息
 warnings.simplefilter("ignore")
 
@@ -526,81 +528,65 @@ def origin_process(preds, target):
     
     return postprocess_preds,target
 
-def compute_iou(preds, target):
-    # assert target.shape[1] == 1, 'only support one mask per image now'
-    # if(preds.shape[2]!=target.shape[2] or preds.shape[3]!=target.shape[3]):
-    #     postprocess_preds = F.interpolate(preds, size=target.size()[2:], mode='bilinear', align_corners=False)
-    # else:
-    #     postprocess_preds = preds
-    # iou = 0
+def measure_process(preds, target):
+    assert target.shape[1] == 1, 'only support one mask per image now'
+    if(preds.shape[2]!=target.shape[2] or preds.shape[3]!=target.shape[3]):
+        postprocess_preds = F.interpolate(preds, size=target.size()[2:], mode='bilinear', align_corners=False)
+    else:
+        postprocess_preds = preds
+    post_preds = measure.label((postprocess_preds[0][0]>0).detach().cpu())
+    post_preds_add_1 = torch.from_numpy(post_preds).unsqueeze(0)
+    return post_preds_add_1,target
 
-    # postprocess_preds,_ = origin_process(preds, target)
+def compute_iou(preds, target):
+    iou = 0
     for i in range(0,len(preds)):
         iou = iou + misc.mask_iou(preds[i],target[i])
     return iou / len(preds)
 
 
-def compute_dice(preds, target):
-    assert target.shape[1] == 1, 'only support one mask per image now'
-    if(preds.shape[2]!=target.shape[2] or preds.shape[3]!=target.shape[3]):
-        postprocess_preds = F.interpolate(preds, size=target.size()[2:], mode='bilinear', align_corners=False)
-        # print(preds.shape,target.shape)
-        # print(postprocess_preds.shape,target.shape)
-    else:
-        postprocess_preds = preds
-    dice = 0
-    for i in range(0,len(preds)):
-        dice = dice + misc.get_dice_1(target[i],postprocess_preds[i])
-        print(dice)
-    return dice / len(preds)
+def compute_dice(preds, target ,mode = "binary"):
+    if mode =="binary":
+        dice = 0
+        for i in range(0,len(preds)):
+            dice = dice + misc.get_dice_1(target[i],preds[i])
+            print(dice)
+        return dice / len(preds)
+    if mode =="inst":
+        dice = 0
+        for i in range(0,len(preds)):
+            dice = dice + misc.get_dice_2(target[i],preds[i])
+            print(dice)
+        return dice / len(preds)
+        
 
-def compute_aji(preds, target):
-    assert target.shape[1] == 1, 'only support one mask per image now'
-    if(preds.shape[2]!=target.shape[2] or preds.shape[3]!=target.shape[3]):
-        postprocess_preds = F.interpolate(preds, size=target.size()[2:], mode='bilinear', align_corners=False)
-    else:
-        postprocess_preds = preds
+def compute_aji(preds, target,mode = "binary"):
     aji = 0
     for i in range(0,len(preds)):
-        aji = aji + misc.get_fast_aji(target[i],postprocess_preds[i])
+        aji = aji + misc.get_fast_aji(target[i],preds[i],mode)
     return aji / len(preds)
 
-def compute_aji_plus(preds, target):
-    assert target.shape[1] == 1, 'only support one mask per image now'
-    if(preds.shape[2]!=target.shape[2] or preds.shape[3]!=target.shape[3]):
-        postprocess_preds = F.interpolate(preds, size=target.size()[2:], mode='bilinear', align_corners=False)
-    else:
-        postprocess_preds = preds
+def compute_aji_plus(preds, target,mode = "binary"):
     aji_p = 0
     for i in range(0,len(preds)):
-        aji_p = aji_p + misc.get_fast_aji_plus(target[i],postprocess_preds[i])
+        aji_p = aji_p + misc.get_fast_aji_plus(target[i],preds[i],mode)
     return aji_p / len(preds)
 
-def compute_pq(preds, target):
-    assert target.shape[1] == 1, 'only support one mask per image now'
-    if(preds.shape[2]!=target.shape[2] or preds.shape[3]!=target.shape[3]):
-        postprocess_preds = F.interpolate(preds, size=target.size()[2:], mode='bilinear', align_corners=False)
-    else:
-        postprocess_preds = preds
+def compute_pq(preds, target,mode = "binary"):
     dq = 0
     sq = 0
     pq = 0
     for i in range(0,len(preds)):
-        [dq_tmp,sq_tmp,pq_tmp],_ =  misc.get_fast_pq(target[i],postprocess_preds[i])
+        [dq_tmp,sq_tmp,pq_tmp],_ =  misc.get_fast_pq(target[i],preds[i],mode=mode)
         dq+=dq_tmp
         sq+=sq_tmp
         pq+=pq_tmp
     return dq / len(preds) , sq / len(preds),pq / len(preds)
 
 def compute_boundary_iou(preds, target):
-    assert target.shape[1] == 1, 'only support one mask per image now'
-    if(preds.shape[2]!=target.shape[2] or preds.shape[3]!=target.shape[3]):
-        postprocess_preds = F.interpolate(preds, size=target.size()[2:], mode='bilinear', align_corners=False)
-    else:
-        postprocess_preds = preds
     iou = 0
     for i in range(0,len(preds)):
-        iou = iou + misc.boundary_iou(target[i],postprocess_preds[i])
+        iou = iou + misc.boundary_iou(target[i],preds[i])
     return iou / len(preds)
 
 def evaluate(args, net, sam, valid_dataloaders, visualize=False):
@@ -614,12 +600,13 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
         print('valid_dataloader len:', len(valid_dataloader))
 
         for data_val in metric_logger.log_every(valid_dataloader,1000):
-            imidx_val, inputs_val, labels_val, shapes_val, labels_ori = data_val['imidx'], data_val['image'], data_val['label'], data_val['shape'], data_val['ori_label']
+            imidx_val, inputs_val, labels_val, shapes_val, labels_ori,inst_labels_ori = data_val['imidx'], data_val['image'], data_val['label'], data_val['shape'], data_val['ori_label'],data_val['ori_inst_label'][0]
 
             if torch.cuda.is_available():
                 inputs_val = inputs_val.cuda()
                 labels_val = labels_val.cuda()
                 labels_ori = labels_ori.cuda()
+                inst_labels_ori = inst_labels_ori.cuda()
 
             imgs = inputs_val.permute(0, 2, 3, 1).cpu().numpy()
             
@@ -666,25 +653,34 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
             # 把原本的后处理封装了一下
             origin_process_pred,_ = origin_process(masks_hq,labels_ori)
             iou = compute_iou(origin_process_pred,labels_ori)  #先看这个报不报错
-            boundary_iou = compute_boundary_iou(masks_hq,labels_ori)
+            boundary_iou = compute_boundary_iou(origin_process_pred,labels_ori)
             #添加评价指标
-            dice = compute_dice(masks_hq,labels_ori)
-            aji = compute_aji(masks_hq,labels_ori)
-            aji_p = compute_aji_plus(masks_hq,labels_ori)
-            dq, sq, pq= compute_pq(masks_hq,labels_ori)
-
+            dice = compute_dice(origin_process_pred,labels_ori)
+            aji = compute_aji(origin_process_pred,labels_ori)
+            aji_p = compute_aji_plus(origin_process_pred,labels_ori)
+            dq, sq, pq= compute_pq(origin_process_pred,labels_ori)
+            
+            
+            # measure_process_inst = measure_process(masks_hq,labels_ori)[0] #这种尝试过了，得到了一组结果
+            measure_process_inst = process(masks_hq,labels_ori,"?") #估计大概一定会报错 
+            measure_process_inst = relabel_instances(measure_process_inst)#发现实例id不连续，大概是数组越界报错的原因，额外加处理一步
+            measure_process_inst = torch.from_numpy(measure_process_inst).unsqueeze(0) #发现实例id不连续，大概是数组越界报错的原因，额外加处理一步
+            
 
 
             #这里做新的后处理，拿到新的结果，估计会报错
-            masks_inst = process(masks_hq)
-            dice = compute_dice(masks_inst,labels_ori)
-            aji = compute_aji(masks_inst,labels_ori)
-            aji_p = compute_aji_plus(masks_inst,labels_ori)
-            dq, sq, pq= compute_pq(masks_inst,labels_ori)
+            # masks_inst = post_process.process(masks_hq)
+            dice_inst = compute_dice(measure_process_inst,inst_labels_ori,"inst")
+            aji_inst = compute_aji(measure_process_inst,inst_labels_ori,"inst")
+            aji_p_inst = compute_aji_plus(measure_process_inst,inst_labels_ori,"inst")
+            dq_inst, sq_inst, pq_inst = compute_pq(measure_process_inst,inst_labels_ori,"inst")
+            # aji = compute_aji(masks_inst,labels_ori)
+            # aji_p = compute_aji_plus(masks_inst,labels_ori)
+            # dq, sq, pq= compute_pq(masks_inst,labels_ori)
             if visualize:
                 print("visualize")
                 os.makedirs(args.output, exist_ok=True)
-                masks_hq_vis = (F.interpolate(masks_hq.detach(), (1024, 1024), mode="bilinear", align_corners=False) > 0).cpu()
+                masks_hq_vis = (F.interpolate(origin_process_pred.detach(), (1024, 1024), mode="bilinear", align_corners=False) > 0).cpu()
                 for ii in range(len(imgs)):
                     base = data_val['imidx'][ii].item()
                     print('base:', base)
@@ -693,15 +689,18 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
                     show_iou = torch.tensor([iou.item()])
                     show_boundary_iou = torch.tensor([boundary_iou.item()])
                     show_anns(masks_hq_vis[ii], None, labels_box[ii].cpu(), None, save_base , imgs_ii, show_iou, show_boundary_iou)
-                       
+
+                
+                plt.imshow(measure_process_inst[0], cmap='viridis')
+                plt.savefig(save_base+'_inst_labeled_image.png')
 
             loss_dict = {"val_iou_"+str(k): iou, "val_boundary_iou_"+str(k): boundary_iou}
             loss_dict_reduced = misc.reduce_dict(loss_dict)
             metric_logger.update(**loss_dict)
-            metrics_dict = {"dice_"+str(k): dice,"aji_"+str(k): aji,"aji_p_"+str(k): aji_p,"dq_"+str(k): dq,"sq_"+str(k): sq,"pq_"+str(k): pq}
+            metrics_dict = {"dice_"+str(k): dice,"aji_"+str(k): aji,"aji_p_"+str(k): aji_p,"dq_"+str(k): dq,"sq_"+str(k): sq,"pq_"+str(k): pq,
+                            "dice_i_"+str(k): dice_inst,"aji_i_"+str(k): aji_inst,"aji_p_i_"+str(k): aji_p_inst,"dq_i_"+str(k): dq_inst,"sq_i_"+str(k): sq_inst,"pq_i_"+str(k): pq_inst}
             metrics_dict_reduced = misc.reduce_dict(metrics_dict)
             metric_logger.update(**metrics_dict)
-
 
         print('============================')
         # gather the stats from all processes
@@ -713,6 +712,13 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
 
     return test_stats
 
+def relabel_instances(inst):
+    unique_ids = np.unique(inst)
+    new_id_map = {old_id: new_id for new_id, old_id in enumerate(unique_ids)}
+    new_inst = np.zeros_like(inst)
+    for old_id, new_id in new_id_map.items():
+        new_inst[inst == old_id] = new_id
+    return new_inst
 
 if __name__ == "__main__":
 
@@ -795,22 +801,30 @@ if __name__ == "__main__":
     dataset_cpm17 = {"name": "CPM-17",
                  "im_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Images",
                  "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_png",
+                 "inst_gt_dir":"/data/hotaru/projects/sam-hq/data/cpm17/train/Labels",
                  "im_ext": ".png",
-                 "gt_ext": ".png"}
+                 "gt_ext": ".png",
+                 "inst_gt_ext":".mat"}
     dataset_cpm17_val = {"name": "CPM-17",
                  "im_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Images",
                  "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_png",
+                 "inst_gt_dir":"/data/hotaru/projects/sam-hq/data/cpm17/train/Labels",
                  "im_ext": ".png",
-                 "gt_ext": ".png"}
+                 "gt_ext": ".png",
+                 "inst_gt_ext":".mat"}
     dataset_cpm17_test = {"name": "CPM-17",
                  "im_dir": "/data/hotaru/projects/sam-hq/data/cpm17/test/Images",
                  "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/test/Labels_binary_png",
+                 "inst_gt_dir":"/data/hotaru/projects/sam-hq/data/cpm17/test/Labels",
                  "im_ext": ".png",
-                 "gt_ext": ".png"}
+                 "gt_ext": ".png",
+                 "inst_gt_ext":".mat"}
 
     train_datasets = [dataset_cpm17]
     valid_datasets = [dataset_cpm17_val] 
     test_datasets = [dataset_cpm17_test] 
+    import torch.distributed as dist
+    # dist.init_process_group(backend='nccl', init_method='env://')
     args = get_args_parser()
     net = MaskDecoderHQ(args.model_type) 
 

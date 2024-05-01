@@ -536,7 +536,7 @@ def boundary_iou(gt, dt, dilation_ratio=0.02):
     boundary_iou = intersection / union
     return torch.tensor(boundary_iou).float().to(device)
 from PIL import Image
-def get_dice_1(true, pred):
+def get_dice_1(true, pred ):
     """Traditional dice."""
     # cast to binary 1st
     true = np.copy((true>128)[0].cpu().byte().numpy())
@@ -545,7 +545,7 @@ def get_dice_1(true, pred):
     inter = true * pred
     denom = true + pred
     return 2.0 * np.sum(inter) / np.sum(denom)
-def get_fast_aji(true, pred):
+def get_fast_aji(true, pred,mode):
     """AJI version distributed by MoNuSeg, has no permutation problem but suffered from 
     over-penalisation similar to DICE2.
 
@@ -554,8 +554,12 @@ def get_fast_aji(true, pred):
     effect on the result.
 
     """
-    true = np.copy((true>128)[0].cpu().byte().numpy())
-    pred = np.copy((pred>0)[0].cpu().byte().numpy())
+    if mode =="binary":
+        true = np.copy((true>128)[0].cpu().byte().numpy())
+        pred = np.copy((pred>0)[0].cpu().byte().numpy())
+    if mode =="inst":
+        true = np.copy(true.cpu().byte().numpy())
+        pred = np.copy(pred.cpu().byte().numpy())
     true_id_list = list(np.unique(true))
     pred_id_list = list(np.unique(pred))
 
@@ -625,7 +629,7 @@ def get_fast_aji(true, pred):
     aji_score = overall_inter / overall_union
     return aji_score
 
-def get_fast_aji_plus(true, pred):
+def get_fast_aji_plus(true, pred,mode):
     """AJI+, an AJI version with maximal unique pairing to obtain overall intersecion.
     Every prediction instance is paired with at most 1 GT instance (1 to 1) mapping, unlike AJI 
     where a prediction instance can be paired against many GT instances (1 to many).
@@ -637,8 +641,12 @@ def get_fast_aji_plus(true, pred):
     effect on the result.
 
     """
-    true = np.copy((true>128)[0].cpu().byte().numpy())
-    pred = np.copy((pred>0)[0].cpu().byte().numpy())
+    if mode =="binary":
+        true = np.copy((true>128)[0].cpu().byte().numpy())
+        pred = np.copy((pred>0)[0].cpu().byte().numpy())
+    if mode =="inst":
+        true = np.copy(true.cpu().byte().numpy())
+        pred = np.copy(pred.cpu().byte().numpy())
     true_id_list = list(np.unique(true))
     pred_id_list = list(np.unique(pred))
 
@@ -709,7 +717,7 @@ def get_fast_aji_plus(true, pred):
     return aji_score
 
 
-def get_fast_pq(true, pred, match_iou=0.5):
+def get_fast_pq(true, pred, match_iou=0.5,mode="binary"):
     """`match_iou` is the IoU threshold level to determine the pairing between
     GT instances `p` and prediction instances `g`. `p` and `g` is a pair
     if IoU > `match_iou`. However, pair of `p` and `g` must be unique 
@@ -734,8 +742,12 @@ def get_fast_pq(true, pred, match_iou=0.5):
     """
     assert match_iou >= 0.0, "Cant' be negative"
 
-    true = np.copy((true>128)[0].cpu().byte().numpy())
-    pred = np.copy((pred>0)[0].cpu().byte().numpy())
+    if mode =="binary":
+        true = np.copy((true>128)[0].cpu().byte().numpy())
+        pred = np.copy((pred>0)[0].cpu().byte().numpy())
+    if mode =="inst":
+        true = np.copy(true.cpu().byte().numpy())
+        pred = np.copy(pred.cpu().byte().numpy())
     true_id_list = list(np.unique(true))
     pred_id_list = list(np.unique(pred))
 
@@ -811,3 +823,25 @@ def get_fast_pq(true, pred, match_iou=0.5):
     sq = paired_iou.sum() / (tp + 1.0e-6)
 
     return [dq, sq, dq * sq], [paired_true, paired_pred, unpaired_true, unpaired_pred]
+
+def get_dice_2(true, pred):
+    """Ensemble Dice as used in Computational Precision Medicine Challenge."""
+    true = np.copy(true.cpu().byte().numpy())
+    pred = np.copy(pred.cpu().byte().numpy())
+    true_id = list(np.unique(true))
+    pred_id = list(np.unique(pred))
+    # remove background aka id 0
+    true_id.remove(0)
+    pred_id.remove(0)
+
+    total_markup = 0
+    total_intersect = 0
+    for t in true_id:
+        t_mask = np.array(true == t, np.uint8)
+        for p in pred_id:
+            p_mask = np.array(pred == p, np.uint8)
+            intersect = p_mask * t_mask
+            if intersect.sum() > 0:
+                total_intersect += intersect.sum()
+                total_markup += t_mask.sum() + p_mask.sum()
+    return 2 * total_intersect / total_markup

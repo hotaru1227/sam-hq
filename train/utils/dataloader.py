@@ -10,6 +10,7 @@ from copy import deepcopy
 from skimage import io
 import os
 from glob import glob
+from scipy.io import loadmat
 
 import torch
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
@@ -26,7 +27,7 @@ def get_im_gt_name_dict(datasets, flag='valid'):
 
     for i in range(len(datasets)):
         print("--->>>", flag, " dataset ",i,"/",len(datasets)," ",datasets[i]["name"],"<<<---")
-        tmp_im_list, tmp_gt_list = [], []
+        tmp_im_list, tmp_gt_list , tmp_inst_gt_list = [], [] ,[]
         tmp_im_list = glob(datasets[i]["im_dir"]+os.sep+'*'+datasets[i]["im_ext"])
         print('-im-',datasets[i]["name"],datasets[i]["im_dir"], ': ',len(tmp_im_list))
 
@@ -36,13 +37,16 @@ def get_im_gt_name_dict(datasets, flag='valid'):
         else:
             tmp_gt_list = [datasets[i]["gt_dir"]+os.sep+x.split(os.sep)[-1].split(datasets[i]["im_ext"])[0]+datasets[i]["gt_ext"] for x in tmp_im_list]
             print('-gt-', datasets[i]["name"],datasets[i]["gt_dir"], ': ',len(tmp_gt_list))
-
+            tmp_inst_gt_list = [datasets[i]["inst_gt_dir"]+os.sep+x.split(os.sep)[-1].split(datasets[i]["im_ext"])[0]+datasets[i]["inst_gt_ext"] for x in tmp_im_list]
+            print('-inst_gt-', datasets[i]["name"],datasets[i]["inst_gt_dir"], ': ',len(tmp_inst_gt_list))
 
         name_im_gt_list.append({"dataset_name":datasets[i]["name"],
                                 "im_path":tmp_im_list,
                                 "gt_path":tmp_gt_list,
+                                "inst_gt_path":tmp_inst_gt_list,
                                 "im_ext":datasets[i]["im_ext"],
-                                "gt_ext":datasets[i]["gt_ext"]})
+                                "gt_ext":datasets[i]["gt_ext"],
+                                "inst_gt_ext":datasets[i]["inst_gt_ext"]})
 
     return name_im_gt_list
 
@@ -212,8 +216,10 @@ class OnlineDataset(Dataset):
         im_name_list = [] # image name
         im_path_list = [] # im path
         gt_path_list = [] # gt path
+        inst_gt_path_list = [] # inst gt path
         im_ext_list = [] # im ext
         gt_ext_list = [] # gt ext
+        inst_gt_ext_list = [] # inst gt ext
         for i in range(0,len(name_im_gt_list)):
             dataset_names.append(name_im_gt_list[i]["dataset_name"])
             # dataset name repeated based on the number of images in this dataset
@@ -221,9 +227,10 @@ class OnlineDataset(Dataset):
             im_name_list.extend([x.split(os.sep)[-1].split(name_im_gt_list[i]["im_ext"])[0] for x in name_im_gt_list[i]["im_path"]])
             im_path_list.extend(name_im_gt_list[i]["im_path"])
             gt_path_list.extend(name_im_gt_list[i]["gt_path"])
+            inst_gt_path_list.extend(name_im_gt_list[i]["inst_gt_path"])
             im_ext_list.extend([name_im_gt_list[i]["im_ext"] for x in name_im_gt_list[i]["im_path"]])
             gt_ext_list.extend([name_im_gt_list[i]["gt_ext"] for x in name_im_gt_list[i]["gt_path"]])
-
+            inst_gt_ext_list.extend([name_im_gt_list[i]["inst_gt_ext"] for x in name_im_gt_list[i]["inst_gt_path"]])
 
         self.dataset["data_name"] = dt_name_list
         self.dataset["im_name"] = im_name_list
@@ -231,8 +238,11 @@ class OnlineDataset(Dataset):
         self.dataset["ori_im_path"] = deepcopy(im_path_list)
         self.dataset["gt_path"] = gt_path_list
         self.dataset["ori_gt_path"] = deepcopy(gt_path_list)
+        self.dataset["inst_gt_path"] = inst_gt_path_list
+        self.dataset["ori_inst_gt_path"] = deepcopy(inst_gt_path_list)
         self.dataset["im_ext"] = im_ext_list
         self.dataset["gt_ext"] = gt_ext_list
+        self.dataset["inst_gt_ext"] = inst_gt_ext_list
 
         self.eval_ori_resolution = eval_ori_resolution
 
@@ -241,8 +251,10 @@ class OnlineDataset(Dataset):
     def __getitem__(self, idx):
         im_path = self.dataset["im_path"][idx]
         gt_path = self.dataset["gt_path"][idx]
+        inst_gt_path = self.dataset["inst_gt_path"][idx]
         im = io.imread(im_path)
         gt = io.imread(gt_path)
+        inst_gt = loadmat(inst_gt_path)['inst_map']
 
         if len(gt.shape) > 2:
             gt = gt[:, :, 0]
@@ -258,6 +270,7 @@ class OnlineDataset(Dataset):
         "imidx": torch.from_numpy(np.array(idx)),
         "image": im,
         "label": gt,
+        "inst_label":inst_gt,
         "shape": torch.tensor(im.shape[-2:]),
         }
         
@@ -266,7 +279,9 @@ class OnlineDataset(Dataset):
 
         if self.eval_ori_resolution:
             sample["ori_label"] = gt.type(torch.uint8)  # NOTE for evaluation only. And no flip here
+            sample["ori_inst_label"] = inst_gt,
             sample['ori_im_path'] = self.dataset["im_path"][idx]
             sample['ori_gt_path'] = self.dataset["gt_path"][idx]
+            sample['ori_inst_gt_path'] = self.dataset["inst_gt_path"][idx]
 
         return sample

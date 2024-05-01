@@ -1,0 +1,46 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: 当前文件",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+       
+       
+        {
+            "name": "sam_hq_val",
+            "type": "python",
+            "request": "launch",
+            "program": "/data/hotaru/projects/sam-hq/train/train.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "--checkpoint",  "/data/hotaru/projects/sam-hq/pretrained_checkpoint/sam_vit_l_0b3195.pth",
+                "--model-type", "vit_l",
+                "--output",  "sam-hq/output/hq_sam_l_cpm17",
+                "--eval",
+                "--restore-model",   "/data/hotaru/projects/sam-hq/train/work_dirs/hq_sam_l_cpm17/epoch_11.pth",
+                "--visualize"
+            ],
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "4",
+                "PYTHONUNBUFFERED": "1",
+                "OMP_NUM_THREADS": "1",
+                "RANK":"0",
+                "WORLD_SIZE":"1",
+                "MASTER_ADDR":"localhost",
+                "MASTER_PORT":"12345",
+                "LOCAL_RANK":"0",
+            },
+            "console": "integratedTerminal",
+            "internalConsoleOptions": "neverOpen"
+        },
+    ]
+}
