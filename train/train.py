@@ -29,6 +29,7 @@ import utils.misc as misc
 import warnings
 from stats_utils import get_dice_1,get_fast_aji_plus,get_fast_pq,get_fast_aji
 
+from .utils.post_process import process
 # 忽略所有警告消息
 warnings.simplefilter("ignore")
 
@@ -516,16 +517,26 @@ def train(args, net, optimizer, train_dataloaders, valid_dataloaders, lr_schedul
         torch.save(sam_ckpt, args.output + model_name)
 
 
-
-def compute_iou(preds, target):
+def origin_process(preds, target):
     assert target.shape[1] == 1, 'only support one mask per image now'
     if(preds.shape[2]!=target.shape[2] or preds.shape[3]!=target.shape[3]):
         postprocess_preds = F.interpolate(preds, size=target.size()[2:], mode='bilinear', align_corners=False)
     else:
         postprocess_preds = preds
-    iou = 0
+    
+    return postprocess_preds,target
+
+def compute_iou(preds, target):
+    # assert target.shape[1] == 1, 'only support one mask per image now'
+    # if(preds.shape[2]!=target.shape[2] or preds.shape[3]!=target.shape[3]):
+    #     postprocess_preds = F.interpolate(preds, size=target.size()[2:], mode='bilinear', align_corners=False)
+    # else:
+    #     postprocess_preds = preds
+    # iou = 0
+
+    # postprocess_preds,_ = origin_process(preds, target)
     for i in range(0,len(preds)):
-        iou = iou + misc.mask_iou(postprocess_preds[i],target[i])
+        iou = iou + misc.mask_iou(preds[i],target[i])
     return iou / len(preds)
 
 
@@ -651,8 +662,10 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
                 hq_token_only=False,
                 interm_embeddings=interm_embeddings,
             )
-
-            iou = compute_iou(masks_hq,labels_ori)
+            
+            # 把原本的后处理封装了一下
+            origin_process_pred,_ = origin_process(masks_hq,labels_ori)
+            iou = compute_iou(origin_process_pred,labels_ori)  #先看这个报不报错
             boundary_iou = compute_boundary_iou(masks_hq,labels_ori)
             #添加评价指标
             dice = compute_dice(masks_hq,labels_ori)
@@ -660,6 +673,14 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
             aji_p = compute_aji_plus(masks_hq,labels_ori)
             dq, sq, pq= compute_pq(masks_hq,labels_ori)
 
+
+
+            #这里做新的后处理，拿到新的结果，估计会报错
+            masks_inst = process(masks_hq)
+            dice = compute_dice(masks_inst,labels_ori)
+            aji = compute_aji(masks_inst,labels_ori)
+            aji_p = compute_aji_plus(masks_inst,labels_ori)
+            dq, sq, pq= compute_pq(masks_inst,labels_ori)
             if visualize:
                 print("visualize")
                 os.makedirs(args.output, exist_ok=True)
