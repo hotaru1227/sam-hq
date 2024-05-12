@@ -10,7 +10,7 @@ import os
 import argparse
 from skimage import measure
 import numpy as np
-
+import re
 import torch.optim as optim
 import torch.nn as nn
 import torch.nn.functional as F
@@ -30,6 +30,7 @@ import utils.misc as misc
 import warnings
 from stats_utils import get_dice_1,get_fast_aji_plus,get_fast_pq,get_fast_aji
 from utils.postproc_other import process
+from scipy.ndimage import label, center_of_mass
 # from .utils.post_process import process
 # from .utils import post_process 
 # 忽略所有警告消息
@@ -610,20 +611,34 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
 
             imgs = inputs_val.permute(0, 2, 3, 1).cpu().numpy()
             
-            labels_box = misc.masks_to_boxes(labels_val[:,0,:,:])
-            input_keys = ['box']
+            # labels_box = misc.masks_to_boxes(labels_val[:,0,:,:])
+            # input_keys = ['box']
             batched_input = []
             for b_i in range(len(imgs)):
                 dict_input = dict()
                 input_image = torch.as_tensor(imgs[b_i].astype(dtype=np.uint8), device=sam.device).permute(2, 0, 1).contiguous()
                 dict_input['image'] = input_image 
-                input_type = random.choice(input_keys)
+                # input_type = random.choice(input_keys)
+                input_type = "point"
                 if input_type == 'box':
                     dict_input['boxes'] = labels_box[b_i:b_i+1]
                 elif input_type == 'point':
-                    point_coords = labels_points[b_i:b_i+1]
-                    dict_input['point_coords'] = point_coords
-                    dict_input['point_labels'] = torch.ones(point_coords.shape[1], device=point_coords.device)[None,:]
+                    # point_coords = labels_points[b_i:b_i+1]
+                    # dict_input['point_coords'] = point_coords
+                    # dict_input['point_labels'] = torch.ones(point_coords.shape[1], device=point_coords.device)[None,:]
+                    point_path = "/data/hotaru/projects/sam-hq/data/cpm17/test/cpm17_test_gt"
+                    pattern = r'image_(\d+)\.png'
+                    # 使用正则表达式匹配字符串
+                    ori_gt_path = data_val['ori_gt_path'][0]
+                    match = re.search(pattern, ori_gt_path).group(1)
+                    point_path = point_path+"/image_"+match+".npy"
+                    point_data = np.load(point_path)
+                    # print(point_data)
+                    dict_input['point_coords'] = torch.unsqueeze(torch.tensor(point_data[:, :2]) , dim=0)  #n,1,2 👉 1,n,2
+                    dict_input['point_labels'] = torch.ones(dict_input['point_coords'].shape[1], device=dict_input['point_coords'].device)[None,:] #n,1 👉1,n
+                    # dict_input['point_labels'] = torch.unsqueeze(torch.squeeze(dict_input['point_labels']), dim=1) 
+
+                    print("1")
                 elif input_type == 'noise_mask':
                     dict_input['mask_inputs'] = labels_noisemask[b_i:b_i+1]
                 else:
@@ -662,11 +677,29 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
             
             
             # measure_process_inst = measure_process(masks_hq,labels_ori)[0] #这种尝试过了，得到了一组结果
-            measure_process_inst = process(masks_hq,labels_ori,"?") #估计大概一定会报错 
+            measure_process_inst = process(masks_hq,labels_ori,"?")
             measure_process_inst = relabel_instances(measure_process_inst)#发现实例id不连续，大概是数组越界报错的原因，额外加处理一步
             measure_process_inst = torch.from_numpy(measure_process_inst).unsqueeze(0) #发现实例id不连续，大概是数组越界报错的原因，额外加处理一步
             
-
+            #把inst图求连通域和中心点做保存
+            labeled_array, num_features = label(measure_process_inst)
+            centers = []
+            for i in range(1, num_features + 1):
+                center = center_of_mass(measure_process_inst, labels=labeled_array, index=i)
+                centers.append(np.array([center[1], center[2], 0]))
+            centers_array = np.array(centers)
+            pattern = r'image_(\d+)\.png'
+            # 使用正则表达式匹配字符串
+            ori_gt_path = data_val['ori_gt_path'][0]
+            match = re.search(pattern, ori_gt_path).group(1)
+            image_name = "image_"+match
+            save_path = '/data/hotaru/projects/save_other_points/cpm/'
+            os.makedirs(save_path,exist_ok=True)
+            np.save(save_path+image_name, centers_array)
+            print("中心点：",centers_array)
+            print("图像：",image_name)
+            print("shape",centers_array.shape)
+            print("*"*10)
 
             #这里做新的后处理，拿到新的结果，估计会报错
             # masks_inst = post_process.process(masks_hq)
@@ -688,19 +721,18 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
                     imgs_ii = imgs[ii].astype(dtype=np.uint8)
                     show_iou = torch.tensor([iou.item()])
                     show_boundary_iou = torch.tensor([boundary_iou.item()])
-                    show_anns(masks_hq_vis[ii], None, labels_box[ii].cpu(), None, save_base , imgs_ii, show_iou, show_boundary_iou)
+                    show_anns(masks_hq_vis[ii], None, None, None, save_base , imgs_ii, show_iou, show_boundary_iou)
 
                 
                 plt.imshow(measure_process_inst[0], cmap='viridis')
                 plt.savefig(save_base+'_inst_labeled_image.png')
 
-            loss_dict = {"val_iou_"+str(k): iou, "val_boundary_iou_"+str(k): boundary_iou}
+            loss_dict = {"val_iou_"+str(k): iou, "val_boundary_iou_"+str(k): boundary_iou,
+            "dice_"+str(k): dice,"aji_"+str(k): aji,"aji_p_"+str(k): aji_p,"dq_"+str(k): dq,"sq_"+str(k): sq,"pq_"+str(k): pq,
+                            "dice_i_"+str(k): dice_inst,"aji_i_"+str(k): aji_inst,"aji_p_i_"+str(k): aji_p_inst,"dq_i_"+str(k): dq_inst,"sq_i_"+str(k): sq_inst,"pq_i_"+str(k): pq_inst}
             loss_dict_reduced = misc.reduce_dict(loss_dict)
             metric_logger.update(**loss_dict)
-            metrics_dict = {"dice_"+str(k): dice,"aji_"+str(k): aji,"aji_p_"+str(k): aji_p,"dq_"+str(k): dq,"sq_"+str(k): sq,"pq_"+str(k): pq,
-                            "dice_i_"+str(k): dice_inst,"aji_i_"+str(k): aji_inst,"aji_p_i_"+str(k): aji_p_inst,"dq_i_"+str(k): dq_inst,"sq_i_"+str(k): sq_inst,"pq_i_"+str(k): pq_inst}
-            metrics_dict_reduced = misc.reduce_dict(metrics_dict)
-            metric_logger.update(**metrics_dict)
+            
 
         print('============================')
         # gather the stats from all processes
@@ -800,21 +832,24 @@ if __name__ == "__main__":
 
     dataset_cpm17 = {"name": "CPM-17",
                  "im_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Images",
-                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_png",
+                #  "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_png",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_contour_png",
                  "inst_gt_dir":"/data/hotaru/projects/sam-hq/data/cpm17/train/Labels",
                  "im_ext": ".png",
                  "gt_ext": ".png",
                  "inst_gt_ext":".mat"}
     dataset_cpm17_val = {"name": "CPM-17",
                  "im_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Images",
-                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_png",
+                #  "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_png",
+                "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_contour_png",
                  "inst_gt_dir":"/data/hotaru/projects/sam-hq/data/cpm17/train/Labels",
                  "im_ext": ".png",
                  "gt_ext": ".png",
                  "inst_gt_ext":".mat"}
     dataset_cpm17_test = {"name": "CPM-17",
                  "im_dir": "/data/hotaru/projects/sam-hq/data/cpm17/test/Images",
-                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/test/Labels_binary_png",
+                #  "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/test/Labels_binary_png",
+                "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/test/Labels_binary_contour_png",
                  "inst_gt_dir":"/data/hotaru/projects/sam-hq/data/cpm17/test/Labels",
                  "im_ext": ".png",
                  "gt_ext": ".png",
