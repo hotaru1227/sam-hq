@@ -299,7 +299,7 @@ def get_args_parser():
     parser.add_argument('--learning_rate', default=1e-3, type=float)
     parser.add_argument('--start_epoch', default=0, type=int)
     parser.add_argument('--lr_drop_epoch', default=10, type=int)
-    parser.add_argument('--max_epoch_num', default=12, type=int)
+    parser.add_argument('--max_epoch_num', default=100, type=int)
     parser.add_argument('--input_size', default=[1024,1024], type=list)
     parser.add_argument('--batch_size_train', default=2, type=int)
     parser.add_argument('--batch_size_valid', default=1, type=int)
@@ -551,13 +551,13 @@ def compute_dice(preds, target ,mode = "binary"):
         dice = 0
         for i in range(0,len(preds)):
             dice = dice + misc.get_dice_1(target[i],preds[i])
-            print(dice)
+            # print(dice)
         return dice / len(preds)
     if mode =="inst":
         dice = 0
         for i in range(0,len(preds)):
             dice = dice + misc.get_dice_2(target[i],preds[i])
-            print(dice)
+            # print(dice)
         return dice / len(preds)
         
 
@@ -619,7 +619,8 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
                 input_image = torch.as_tensor(imgs[b_i].astype(dtype=np.uint8), device=sam.device).permute(2, 0, 1).contiguous()
                 dict_input['image'] = input_image 
                 # input_type = random.choice(input_keys)
-                input_type = "point"
+                labels_box = misc.masks_to_boxes(labels_val[:,0,:,:])
+                input_type = "box"
                 if input_type == 'box':
                     dict_input['boxes'] = labels_box[b_i:b_i+1]
                 elif input_type == 'point':
@@ -638,7 +639,7 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
                     dict_input['point_labels'] = torch.ones(dict_input['point_coords'].shape[1], device=dict_input['point_coords'].device)[None,:] #n,1 👉1,n
                     # dict_input['point_labels'] = torch.unsqueeze(torch.squeeze(dict_input['point_labels']), dim=1) 
 
-                    print("1")
+                    # print("1")
                 elif input_type == 'noise_mask':
                     dict_input['mask_inputs'] = labels_noisemask[b_i:b_i+1]
                 else:
@@ -655,18 +656,33 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
             sparse_embeddings = [batched_output[i_l]['sparse_embeddings'] for i_l in range(batch_len)]
             dense_embeddings = [batched_output[i_l]['dense_embeddings'] for i_l in range(batch_len)]
             
-            masks_sam, masks_hq = net(
-                image_embeddings=encoder_embedding,
-                image_pe=image_pe,
-                sparse_prompt_embeddings=sparse_embeddings,
-                dense_prompt_embeddings=dense_embeddings,
-                multimask_output=False,
-                hq_token_only=False,
-                interm_embeddings=interm_embeddings,
-            )
-            
+            # masks_sam, masks_hq = net(
+            #     image_embeddings=encoder_embedding,
+            #     image_pe=image_pe,
+            #     sparse_prompt_embeddings=sparse_embeddings,
+            #     dense_prompt_embeddings=dense_embeddings,
+            #     multimask_output=False,
+            #     hq_token_only=False,
+            #     interm_embeddings=interm_embeddings,
+            # )
+            '''
+            就是看看这个质量如何 要删掉
+            '''
+            ori_gt_path = data_val['ori_gt_path'][0]
+            pattern = r'image_(\d+)\.png'
+            match = re.search(pattern, ori_gt_path).group(1)
+            image_name = "image_"+match+".png"
+            save_path = "/data/hotaru/projects/sam-hq/train/save_output/mask-contour/"
+            masks_hq  = cv2.imread(save_path+image_name, cv2.IMREAD_GRAYSCALE)
+            '''
+            以上
+            '''
             # 把原本的后处理封装了一下
-            origin_process_pred,_ = origin_process(masks_hq,labels_ori)
+            masks_hq = torch.from_numpy(masks_hq).unsqueeze(0).unsqueeze(0).cuda()
+            print(masks_hq.shape)
+            print(labels_ori.shape)
+            # origin_process_pred,_ = origin_process(masks_hq_,labels_ori)
+            origin_process_pred = masks_hq
             iou = compute_iou(origin_process_pred,labels_ori)  #先看这个报不报错
             boundary_iou = compute_boundary_iou(origin_process_pred,labels_ori)
             #添加评价指标
@@ -676,44 +692,32 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
             dq, sq, pq= compute_pq(origin_process_pred,labels_ori)
             
             
-            # measure_process_inst = measure_process(masks_hq,labels_ori)[0] #这种尝试过了，得到了一组结果
-            measure_process_inst = process(masks_hq,labels_ori,"?")
+            measure_process_inst = measure_process(masks_hq,labels_ori) #这种尝试过了，得到了一组结果
+
+
+            # measure_process_inst = process(masks_hq,labels_ori,"?")
             measure_process_inst = relabel_instances(measure_process_inst)#发现实例id不连续，大概是数组越界报错的原因，额外加处理一步
+            temp_visial = torch.from_numpy(measure_process_inst).unsqueeze(0).unsqueeze(0)
             measure_process_inst = torch.from_numpy(measure_process_inst).unsqueeze(0) #发现实例id不连续，大概是数组越界报错的原因，额外加处理一步
             
-            #把inst图求连通域和中心点做保存
-            labeled_array, num_features = label(measure_process_inst)
-            centers = []
-            for i in range(1, num_features + 1):
-                center = center_of_mass(measure_process_inst, labels=labeled_array, index=i)
-                centers.append(np.array([center[1], center[2], 0]))
-            centers_array = np.array(centers)
-            pattern = r'image_(\d+)\.png'
-            # 使用正则表达式匹配字符串
-            ori_gt_path = data_val['ori_gt_path'][0]
-            match = re.search(pattern, ori_gt_path).group(1)
-            image_name = "image_"+match
-            save_path = '/data/hotaru/projects/save_other_points/cpm/'
-            os.makedirs(save_path,exist_ok=True)
-            np.save(save_path+image_name, centers_array)
-            print("中心点：",centers_array)
-            print("图像：",image_name)
-            print("shape",centers_array.shape)
-            print("*"*10)
 
             #这里做新的后处理，拿到新的结果，估计会报错
             # masks_inst = post_process.process(masks_hq)
+
             dice_inst = compute_dice(measure_process_inst,inst_labels_ori,"inst")
             aji_inst = compute_aji(measure_process_inst,inst_labels_ori,"inst")
             aji_p_inst = compute_aji_plus(measure_process_inst,inst_labels_ori,"inst")
             dq_inst, sq_inst, pq_inst = compute_pq(measure_process_inst,inst_labels_ori,"inst")
+
             # aji = compute_aji(masks_inst,labels_ori)
             # aji_p = compute_aji_plus(masks_inst,labels_ori)
             # dq, sq, pq= compute_pq(masks_inst,labels_ori)
             if visualize:
                 print("visualize")
                 os.makedirs(args.output, exist_ok=True)
-                masks_hq_vis = (F.interpolate(origin_process_pred.detach(), (1024, 1024), mode="bilinear", align_corners=False) > 0).cpu()
+                print(temp_visial.shape)
+                temp_visial = temp_visial.float()
+                masks_hq_vis = (F.interpolate(temp_visial.detach(), (1024, 1024), mode="bilinear", align_corners=False) > 0).cpu()
                 for ii in range(len(imgs)):
                     base = data_val['imidx'][ii].item()
                     print('base:', base)
@@ -723,14 +727,21 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
                     show_boundary_iou = torch.tensor([boundary_iou.item()])
                     show_anns(masks_hq_vis[ii], None, None, None, save_base , imgs_ii, show_iou, show_boundary_iou)
 
-                
-                plt.imshow(measure_process_inst[0], cmap='viridis')
-                plt.savefig(save_base+'_inst_labeled_image.png')
+                # binary_save_path = "/data/hotaru/projects/sam-hq/train/save_output/mask/"
+                # # plt.imshow(origin_process_pred.cpu().detach().numpy()[0][0]>0)
+                # origin_process_pred_cpu = origin_process_pred.cpu().detach()
+                # # 2. 转换为 NumPy 数组
+                # origin_process_pred_numpy = origin_process_pred_cpu.numpy()
+                # from PIL import Image
+                # binary_semantic_map = np.where(origin_process_pred_numpy[0][0] > 0, 1, 0)
+                # binary_semantic_map_image = Image.fromarray(binary_semantic_map.astype(np.uint8) * 255)
+                # save_path = binary_save_path+str(k)+'_'+ str(base)+'.png'
+                # binary_semantic_map_image.save(save_path)
 
             loss_dict = {"val_iou_"+str(k): iou, "val_boundary_iou_"+str(k): boundary_iou,
             "dice_"+str(k): dice,"aji_"+str(k): aji,"aji_p_"+str(k): aji_p,"dq_"+str(k): dq,"sq_"+str(k): sq,"pq_"+str(k): pq,
                             "dice_i_"+str(k): dice_inst,"aji_i_"+str(k): aji_inst,"aji_p_i_"+str(k): aji_p_inst,"dq_i_"+str(k): dq_inst,"sq_i_"+str(k): sq_inst,"pq_i_"+str(k): pq_inst}
-            loss_dict_reduced = misc.reduce_dict(loss_dict)
+            # loss_dict_reduced = misc.reduce_dict(loss_dict)
             metric_logger.update(**loss_dict)
             
 
@@ -832,24 +843,24 @@ if __name__ == "__main__":
 
     dataset_cpm17 = {"name": "CPM-17",
                  "im_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Images",
-                #  "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_png",
-                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_contour_png",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_png",
+                #  "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_contour_png",
                  "inst_gt_dir":"/data/hotaru/projects/sam-hq/data/cpm17/train/Labels",
                  "im_ext": ".png",
                  "gt_ext": ".png",
                  "inst_gt_ext":".mat"}
     dataset_cpm17_val = {"name": "CPM-17",
                  "im_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Images",
-                #  "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_png",
-                "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_contour_png",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_png",
+                # "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_contour_png",
                  "inst_gt_dir":"/data/hotaru/projects/sam-hq/data/cpm17/train/Labels",
                  "im_ext": ".png",
                  "gt_ext": ".png",
                  "inst_gt_ext":".mat"}
     dataset_cpm17_test = {"name": "CPM-17",
                  "im_dir": "/data/hotaru/projects/sam-hq/data/cpm17/test/Images",
-                #  "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/test/Labels_binary_png",
-                "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/test/Labels_binary_contour_png",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/test/Labels_binary_png",
+                # "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/test/Labels_binary_contour_png",
                  "inst_gt_dir":"/data/hotaru/projects/sam-hq/data/cpm17/test/Labels",
                  "im_ext": ".png",
                  "gt_ext": ".png",
