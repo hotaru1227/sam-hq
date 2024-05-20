@@ -171,7 +171,12 @@ class Sam(nn.Module):
 
     def preprocess(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize pixel values and pad to a square input."""
+        x = x[:3,:,:]
         # Normalize colors
+        # print("*"*12)
+        # print(self.pixel_std.shape) #3,1,1
+        # print(self.pixel_mean.shape)#3,1,1
+        # print(x.shape)#正确应该是3,1024,1024
         x = (x - self.pixel_mean) / self.pixel_std
 
         # Pad

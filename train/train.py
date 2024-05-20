@@ -299,9 +299,9 @@ def get_args_parser():
     parser.add_argument('--learning_rate', default=1e-3, type=float)
     parser.add_argument('--start_epoch', default=0, type=int)
     parser.add_argument('--lr_drop_epoch', default=10, type=int)
-    parser.add_argument('--max_epoch_num', default=100, type=int)
+    parser.add_argument('--max_epoch_num', default=50, type=int)
     parser.add_argument('--input_size', default=[1024,1024], type=list)
-    parser.add_argument('--batch_size_train', default=2, type=int)
+    parser.add_argument('--batch_size_train', default=4, type=int)
     parser.add_argument('--batch_size_valid', default=1, type=int)
     parser.add_argument('--model_save_fre', default=1, type=int)
 
@@ -455,7 +455,7 @@ def train(args, net, optimizer, train_dataloaders, valid_dataloaders, lr_schedul
 
             with torch.no_grad():
                 batched_output, interm_embeddings = sam(batched_input, multimask_output=False)
-            
+
             batch_len = len(batched_output)
             encoder_embedding = torch.cat([batched_output[i_l]['encoder_embedding'] for i_l in range(batch_len)], dim=0)
             image_pe = [batched_output[i_l]['image_pe'] for i_l in range(batch_len)]
@@ -590,6 +590,33 @@ def compute_boundary_iou(preds, target):
         iou = iou + misc.boundary_iou(target[i],preds[i])
     return iou / len(preds)
 
+def dilate_instance_map(instance_map, iterations=3):
+    # 使用膨胀操作
+    kernel = np.ones((3, 3), np.uint8)
+    dilated_map = cv2.dilate(instance_map.astype(np.uint8), kernel, iterations=iterations)
+    return dilated_map
+
+def compare_and_color(pred_map, true_map):
+    # 创建一个空白的RGB图像
+    h, w = pred_map.shape
+    result_img = np.zeros((h, w, 3), dtype=np.uint8)
+
+    # 判断像素值并赋予颜色
+    for i in range(h):
+        for j in range(w):
+            pred_val = pred_map[i, j]
+            true_val = true_map[i, j]
+
+            if pred_val == 0 and true_val == 0:
+                result_img[i, j] = [0, 0, 0]  # 黑色
+            elif pred_val > 0 and true_val == 0:
+                result_img[i, j] = [0, 0, 255]  # 红色
+            elif pred_val == 0 and true_val > 0:
+                result_img[i, j] = [255, 0, 0]  # 蓝色
+            elif pred_val > 0 and true_val > 0:
+                result_img[i, j] = [0, 255, 0]  # 绿色
+
+    return result_img
 def evaluate(args, net, sam, valid_dataloaders, visualize=False):
     net.eval()
     print("Validating...")
@@ -620,7 +647,7 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
                 dict_input['image'] = input_image 
                 # input_type = random.choice(input_keys)
                 labels_box = misc.masks_to_boxes(labels_val[:,0,:,:])
-                input_type = "box"
+                input_type = "point"
                 if input_type == 'box':
                     dict_input['boxes'] = labels_box[b_i:b_i+1]
                 elif input_type == 'point':
@@ -656,77 +683,78 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
             sparse_embeddings = [batched_output[i_l]['sparse_embeddings'] for i_l in range(batch_len)]
             dense_embeddings = [batched_output[i_l]['dense_embeddings'] for i_l in range(batch_len)]
             
-            # masks_sam, masks_hq = net(
-            #     image_embeddings=encoder_embedding,
-            #     image_pe=image_pe,
-            #     sparse_prompt_embeddings=sparse_embeddings,
-            #     dense_prompt_embeddings=dense_embeddings,
-            #     multimask_output=False,
-            #     hq_token_only=False,
-            #     interm_embeddings=interm_embeddings,
-            # )
-            '''
-            就是看看这个质量如何 要删掉
-            '''
+            masks_sam, masks_hq = net(
+                image_embeddings=encoder_embedding,
+                image_pe=image_pe,
+                sparse_prompt_embeddings=sparse_embeddings,
+                dense_prompt_embeddings=dense_embeddings,
+                multimask_output=False,
+                hq_token_only=False,
+                interm_embeddings=interm_embeddings,
+            )
+
+
+            # '''
+            # 就是看看这个质量如何 要删掉
+            # '''
             ori_gt_path = data_val['ori_gt_path'][0]
-            pattern = r'image_(\d+)\.png'
+            pattern = r'/([^/]+)\.png$'
             match = re.search(pattern, ori_gt_path).group(1)
             image_name = "image_"+match+".png"
-            save_path = "/data/hotaru/projects/sam-hq/train/save_output/mask-contour/"
-            masks_hq  = cv2.imread(save_path+image_name, cv2.IMREAD_GRAYSCALE)
-            '''
-            以上
-            '''
+            # save_path = "/data/hotaru/projects/sam-hq/train/save_output/mask-contour/"
+            # masks_hq  = cv2.imread(save_path+image_name, cv2.IMREAD_GRAYSCALE)
+            # masks_hq[masks_hq==1] = 0  #啊啊啊太蠢了
+            # masks_hq = torch.from_numpy(masks_hq).unsqueeze(0).unsqueeze(0).cuda().float()
+            # print(masks_hq.shape)
+            # print(labels_ori.shape)
+            # '''
+            # 以上
+            # '''
+
+
             # 把原本的后处理封装了一下
-            masks_hq = torch.from_numpy(masks_hq).unsqueeze(0).unsqueeze(0).cuda()
-            print(masks_hq.shape)
-            print(labels_ori.shape)
-            # origin_process_pred,_ = origin_process(masks_hq_,labels_ori)
-            origin_process_pred = masks_hq
+            origin_process_pred,_ = origin_process(masks_hq,labels_ori)
+            # origin_process_pred = masks_hq
             iou = compute_iou(origin_process_pred,labels_ori)  #先看这个报不报错
             boundary_iou = compute_boundary_iou(origin_process_pred,labels_ori)
-            #添加评价指标
             dice = compute_dice(origin_process_pred,labels_ori)
             aji = compute_aji(origin_process_pred,labels_ori)
             aji_p = compute_aji_plus(origin_process_pred,labels_ori)
             dq, sq, pq= compute_pq(origin_process_pred,labels_ori)
             
             
-            measure_process_inst = measure_process(masks_hq,labels_ori) #这种尝试过了，得到了一组结果
+            # measure_process_inst = measure_process(masks_hq,labels_ori)[0] #这种尝试过了，得到了一组结果
 
 
-            # measure_process_inst = process(masks_hq,labels_ori,"?")
+            measure_process_inst = process(masks_hq,labels_ori,"?") #1,600,600
+            # measure_process_inst = dilate_instance_map(measure_process_inst,2) #膨胀三个像素
             measure_process_inst = relabel_instances(measure_process_inst)#发现实例id不连续，大概是数组越界报错的原因，额外加处理一步
-            temp_visial = torch.from_numpy(measure_process_inst).unsqueeze(0).unsqueeze(0)
-            measure_process_inst = torch.from_numpy(measure_process_inst).unsqueeze(0) #发现实例id不连续，大概是数组越界报错的原因，额外加处理一步
+            inst_labels_ori = relabel_instances(inst_labels_ori.cpu().numpy())
+            inst_labels_ori = torch.from_numpy(inst_labels_ori)
+
+            measure_process_inst = torch.from_numpy(measure_process_inst).unsqueeze(0)#发现实例id不连续，大概是数组越界报错的原因，额外加处理一步
             
 
-            #这里做新的后处理，拿到新的结果，估计会报错
-            # masks_inst = post_process.process(masks_hq)
-
-            dice_inst = compute_dice(measure_process_inst,inst_labels_ori,"inst")
+            dice_inst = compute_dice(measure_process_inst,inst_labels_ori,"inst") #1,600,600
             aji_inst = compute_aji(measure_process_inst,inst_labels_ori,"inst")
             aji_p_inst = compute_aji_plus(measure_process_inst,inst_labels_ori,"inst")
             dq_inst, sq_inst, pq_inst = compute_pq(measure_process_inst,inst_labels_ori,"inst")
 
-            # aji = compute_aji(masks_inst,labels_ori)
-            # aji_p = compute_aji_plus(masks_inst,labels_ori)
-            # dq, sq, pq= compute_pq(masks_inst,labels_ori)
             if visualize:
                 print("visualize")
                 os.makedirs(args.output, exist_ok=True)
-                print(temp_visial.shape)
-                temp_visial = temp_visial.float()
-                masks_hq_vis = (F.interpolate(temp_visial.detach(), (1024, 1024), mode="bilinear", align_corners=False) > 0).cpu()
+                masks_hq_vis = (F.interpolate(measure_process_inst.float().unsqueeze(0).detach(), (1024, 1024), mode="bilinear", align_corners=False) > 0).cpu()
                 for ii in range(len(imgs)):
                     base = data_val['imidx'][ii].item()
                     print('base:', base)
-                    save_base = os.path.join(args.output, str(k)+'_'+ str(base))
+                    save_base = os.path.join(args.output, image_name)
                     imgs_ii = imgs[ii].astype(dtype=np.uint8)
                     show_iou = torch.tensor([iou.item()])
                     show_boundary_iou = torch.tensor([boundary_iou.item()])
-                    show_anns(masks_hq_vis[ii], None, None, None, save_base , imgs_ii, show_iou, show_boundary_iou)
+                    show_anns(masks_hq_vis[ii], None,  None,None, save_base , imgs_ii, show_iou, show_boundary_iou)
+                
 
+                #为应用后处理额外保存的二值图mask结果
                 # binary_save_path = "/data/hotaru/projects/sam-hq/train/save_output/mask/"
                 # # plt.imshow(origin_process_pred.cpu().detach().numpy()[0][0]>0)
                 # origin_process_pred_cpu = origin_process_pred.cpu().detach()
@@ -737,6 +765,28 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
                 # binary_semantic_map_image = Image.fromarray(binary_semantic_map.astype(np.uint8) * 255)
                 # save_path = binary_save_path+str(k)+'_'+ str(base)+'.png'
                 # binary_semantic_map_image.save(save_path)
+                
+                #这里再保存实例图 糖果随机色
+                measure_process_inst_np = measure_process_inst[0].cpu().numpy()
+                num_instances = np.max(measure_process_inst_np) + 1
+                colors = np.random.randint(0, 255, (num_instances, 3))
+                inst_img = colors[measure_process_inst_np]
+                plt.imsave(args.output+"/"+image_name+"_inst.png", inst_img.astype(np.uint8))
+                ####
+
+                #保存一下差异图 在这个上面点点吧
+                #point:batched_input[0]['point_coords']
+                pred_map = torch.squeeze(measure_process_inst).cpu().numpy()
+                true_map = torch.squeeze(inst_labels_ori).cpu().numpy()
+                result_img = compare_and_color(pred_map, true_map)
+                if batched_input[0]['point_coords'] is not None:
+                    for input_data in batched_input:
+                        point_coords = input_data['point_coords']
+                        for point in point_coords.numpy()[0]:
+                            # 将 point_coords 中的每个坐标画成半径为 5 的白色圆点
+                            cv2.circle(result_img, (point[0], point[1]), radius=3, color=(255, 255, 255), thickness=-1)
+
+                cv2.imwrite(args.output+"/"+image_name+"_differ.png", result_img)
 
             loss_dict = {"val_iou_"+str(k): iou, "val_boundary_iou_"+str(k): boundary_iou,
             "dice_"+str(k): dice,"aji_"+str(k): aji,"aji_p_"+str(k): aji_p,"dq_"+str(k): dq,"sq_"+str(k): sq,"pq_"+str(k): pq,
@@ -767,97 +817,17 @@ if __name__ == "__main__":
 
     ### --------------- Configuring the Train and Valid datasets ---------------
 
-    #原始数据集
-    '''
-    原始的数据集
-    
-    dataset_dis = {"name": "DIS5K-TR",
-                 "im_dir": "/data/hotaru/projects/sam-hq/data/DIS5K/DIS-TR/im",
-                 "gt_dir": "/data/hotaru/projects/sam-hq/data/DIS5K/DIS-TR/gt",
-                 "im_ext": ".jpg",
-                 "gt_ext": ".png"}
-
-    dataset_thin = {"name": "ThinObject5k-TR",
-                 "im_dir": "/data/hotaru/projects/sam-hq/data/thin_object_detection/ThinObject5K/images_train",
-                 "gt_dir": "/data/hotaru/projects/sam-hq/data/thin_object_detection/ThinObject5K/masks_train",
-                 "im_ext": ".jpg",
-                 "gt_ext": ".png"}
-
-    dataset_fss = {"name": "FSS",
-                 "im_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/fss_all",
-                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/fss_all",
-                 "im_ext": ".jpg",
-                 "gt_ext": ".png"}
-
-    dataset_duts = {"name": "DUTS-TR",
-                 "im_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/DUTS-TR",
-                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/DUTS-TR",
-                 "im_ext": ".jpg",
-                 "gt_ext": ".png"}
-
-    dataset_duts_te = {"name": "DUTS-TE",
-                 "im_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/DUTS-TE",
-                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/DUTS-TE",
-                 "im_ext": ".jpg",
-                 "gt_ext": ".png"}
-
-    dataset_ecssd = {"name": "ECSSD",
-                 "im_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/ecssd",
-                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/ecssd",
-                 "im_ext": ".jpg",
-                 "gt_ext": ".png"}
-
-    dataset_msra = {"name": "MSRA10K",
-                 "im_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/MSRA_10K",
-                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cascade_psp/MSRA_10K",
-                 "im_ext": ".jpg",
-                 "gt_ext": ".png"}
-
-    # valid set
-    dataset_coift_val = {"name": "COIFT",
-                 "im_dir": "/data/hotaru/projects/sam-hq/data/thin_object_detection/COIFT/images",
-                 "gt_dir": "/data/hotaru/projects/sam-hq/data/thin_object_detection/COIFT/masks",
-                 "im_ext": ".jpg",
-                 "gt_ext": ".png"}
-
-    dataset_hrsod_val = {"name": "HRSOD",
-                 "im_dir": "/data/hotaru/projects/sam-hq/data/thin_object_detection/HRSOD/images",
-                 "gt_dir": "/data/hotaru/projects/sam-hq/data/thin_object_detection/HRSOD/masks_max255",
-                 "im_ext": ".jpg",
-                 "gt_ext": ".png"}
-
-    dataset_thin_val = {"name": "ThinObject5k-TE",
-                 "im_dir": "/data/hotaru/projects/sam-hq/data/thin_object_detection/ThinObject5K/images_test",
-                 "gt_dir": "/data/hotaru/projects/sam-hq/data/thin_object_detection/ThinObject5K/masks_test",
-                 "im_ext": ".jpg",
-                 "gt_ext": ".png"}
-
-    dataset_dis_val = {"name": "DIS5K-VD",
-                 "im_dir": "/data/hotaru/projects/sam-hq/data/DIS5K/DIS-VD/im",
-                 "gt_dir": "/data/hotaru/projects/sam-hq/data/DIS5K/DIS-VD/gt",
-                 "im_ext": ".jpg",
-                 "gt_ext": ".png"}
-
-    '''
 
 
-    dataset_cpm17 = {"name": "CPM-17",
+    dataset_cpm17_origin_train = {"name": "CPM-17",
                  "im_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Images",
-                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_png",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_png", 
                 #  "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_contour_png",
                  "inst_gt_dir":"/data/hotaru/projects/sam-hq/data/cpm17/train/Labels",
                  "im_ext": ".png",
                  "gt_ext": ".png",
                  "inst_gt_ext":".mat"}
-    dataset_cpm17_val = {"name": "CPM-17",
-                 "im_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Images",
-                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_png",
-                # "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/train/Labels_binary_contour_png",
-                 "inst_gt_dir":"/data/hotaru/projects/sam-hq/data/cpm17/train/Labels",
-                 "im_ext": ".png",
-                 "gt_ext": ".png",
-                 "inst_gt_ext":".mat"}
-    dataset_cpm17_test = {"name": "CPM-17",
+    dataset_cpm17_origin_test = {"name": "CPM-17",
                  "im_dir": "/data/hotaru/projects/sam-hq/data/cpm17/test/Images",
                  "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/test/Labels_binary_png",
                 # "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17/test/Labels_binary_contour_png",
@@ -865,10 +835,29 @@ if __name__ == "__main__":
                  "im_ext": ".png",
                  "gt_ext": ".png",
                  "inst_gt_ext":".mat"}
+    
+    dataset_cpm17_patch_540_train= {"name": "CPM-17",
+                 "im_dir": "/data/hotaru/projects/sam-hq/data/cpm17_540/train/Image",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17_540/train/Label_binary", 
+                 "inst_gt_dir":"/data/hotaru/projects/sam-hq/data/cpm17_540/train/Label_inst",
+                 "im_ext": ".png",
+                 "gt_ext": ".png",
+                 "inst_gt_ext":".mat"}
+    dataset_cpm17_patch_540_test= {"name": "CPM-17",
+                 "im_dir": "/data/hotaru/projects/sam-hq/data/cpm17_540/valid/Image",
+                 "gt_dir": "/data/hotaru/projects/sam-hq/data/cpm17_540/valid/Label_binary", 
+                 "inst_gt_dir":"/data/hotaru/projects/sam-hq/data/cpm17_540/valid/Label_inst",
+                 "im_ext": ".png",
+                 "gt_ext": ".png",
+                 "inst_gt_ext":".mat"}
 
-    train_datasets = [dataset_cpm17]
-    valid_datasets = [dataset_cpm17_val] 
-    test_datasets = [dataset_cpm17_test] 
+    train_datasets = [dataset_cpm17_patch_540_train]
+    valid_datasets = [dataset_cpm17_origin_train] 
+    test_datasets = [dataset_cpm17_origin_test] 
+
+    # train_datasets = [dataset_cpm17_origin_train]
+    # valid_datasets = [dataset_cpm17_origin_train] 
+    # test_datasets = [dataset_cpm17_origin_test] 
     import torch.distributed as dist
     # dist.init_process_group(backend='nccl', init_method='env://')
     args = get_args_parser()
