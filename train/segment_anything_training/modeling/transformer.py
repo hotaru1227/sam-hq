@@ -63,7 +63,7 @@ class TwoWayTransformer(nn.Module):
         self,
         image_embedding: Tensor,
         image_pe: Tensor,
-        point_embedding: Tensor,
+        point_embedding: Tensor, #传进来的token也结合了outputtoken
     ) -> Tuple[Tensor, Tensor]:
         """
         Args:

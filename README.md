@@ -1,3 +1,3 @@
 CUDA_VISIBLE_DEVICES=4,5 python -m torch.distributed.launch --nproc_per_node=2 train.py --checkpoint /data/hotaru/projects/sam-hq/pretrained_checkpoint/sam_vit_l_0b3195.pth --model-type vit_l --output work_dirs/cpm_patched
 
-CUDA_VISIBLE_DEVICES=4 python -m torch.distributed.launch --nproc_per_node=1 train.py --checkpoint /data/hotaru/projects/sam-hq/pretrained_checkpoint/sam_vit_l_0b3195.pth --model-type vit_l --output sam-hq/output/cpm17_540_allpoints_cdnet --eval --restore-model /data/hotaru/projects/sam-hq/train/work_dirs/cpm_patched/epoch_49.pth --visualize
+CUDA_VISIBLE_DEVICES=4 python -m torch.distributed.launch --nproc_per_node=1 train.py --checkpoint /data/hotaru/projects/sam-hq/pretrained_checkpoint/sam_vit_l_0b3195.pth --model-type vit_l --output sam-hq/output/cpm17_540_subc_cdnet_add1  --bi_output sam-hq/train/save_output/540images/mask  --eval --restore-model /data/hotaru/projects/sam-hq/train/work_dirs/cpm_patched/epoch_49.pth --visualize

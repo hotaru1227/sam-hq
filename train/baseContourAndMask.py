@@ -1,15 +1,12 @@
 import cv2
 import os
 import numpy as np
-from stats_utils import get_dice_1,get_fast_aji_plus,get_fast_pq,get_fast_aji
-from utils.postproc_other import process
 from scipy.io import loadmat
 
 # 文件夹路径
-folder1_path = "/data/hotaru/projects/sam-hq/train/save_output/mask"
+folder1_path = "/data/hotaru/projects/sam-hq/train/save_output/540images/mask"
 folder2_path = "/data/hotaru/projects/sam-hq/train/save_output/contour"
-save_path = "/data/hotaru/projects/sam-hq/train/save_output/mask-contour"
-gt_path = "/data/hotaru/projects/sam-hq/data/cpm17/test/Labels/"
+save_path = "/data/hotaru/projects/sam-hq/train/save_output/540images/mask-contour"
 
 # 加载图像并处理
 def load_images(folder_path):

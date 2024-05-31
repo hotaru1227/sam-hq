@@ -118,14 +118,14 @@ class MaskDecoder(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predicts masks. See 'forward' for more details."""
         # Concatenate output tokens
-        output_tokens = torch.cat([self.iou_token.weight, self.mask_tokens.weight], dim=0)
-        output_tokens = output_tokens.unsqueeze(0).expand(sparse_prompt_embeddings.size(0), -1, -1)
-        tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1)
+        output_tokens = torch.cat([self.iou_token.weight, self.mask_tokens.weight], dim=0) #1，256 cat 4,256
+        output_tokens = output_tokens.unsqueeze(0).expand(sparse_prompt_embeddings.size(0), -1, -1) # c,5,256
+        tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1) # c, point_num + 5 , 256
 
         # Expand per-image data in batch direction to be per-mask
-        src = torch.repeat_interleave(image_embeddings, tokens.shape[0], dim=0) 
-        src = src + dense_prompt_embeddings
-        pos_src = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0)
+        src = torch.repeat_interleave(image_embeddings, tokens.shape[0], dim=0)  #torch.Size([1, 256, 64, 64])
+        src = src + dense_prompt_embeddings #有点像在等比放大 dense_prompt_embedding的256维像一样的
+        pos_src = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0) #torch.Size([1, 256, 64, 64])
         b, c, h, w = src.shape
 
         # Run the transformer
@@ -139,7 +139,7 @@ class MaskDecoder(nn.Module):
         hyper_in_list: List[torch.Tensor] = []
         for i in range(self.num_mask_tokens):
             hyper_in_list.append(self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :]))
-        hyper_in = torch.stack(hyper_in_list, dim=1)
+        hyper_in = torch.stack(hyper_in_list, dim=1) #torch.Size([1, 4, 32])
         b, c, h, w = upscaled_embedding.shape
         masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(b, -1, h, w)
 

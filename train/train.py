@@ -288,6 +288,8 @@ def get_args_parser():
 
     parser.add_argument("--output", type=str, required=True, 
                         help="Path to the directory where masks and checkpoints will be output")
+    parser.add_argument("--bi_output", type=str, 
+                        help="Path to the directory where binary masks will be output")
     parser.add_argument("--model-type", type=str, default="vit_l", 
                         help="The type of model to load, in ['vit_h', 'vit_l', 'vit_b']")
     parser.add_argument("--checkpoint", type=str, required=True, 
@@ -649,8 +651,10 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
                 labels_box = misc.masks_to_boxes(labels_val[:,0,:,:])
                 input_type = "point"
                 if input_type == 'box':
+                    print("infer,box")
                     dict_input['boxes'] = labels_box[b_i:b_i+1]
                 elif input_type == 'point':
+                    print("infer,point")
                     # point_coords = labels_points[b_i:b_i+1]
                     # dict_input['point_coords'] = point_coords
                     # dict_input['point_labels'] = torch.ones(point_coords.shape[1], device=point_coords.device)[None,:]
@@ -668,6 +672,7 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
 
                     # print("1")
                 elif input_type == 'noise_mask':
+                    print("infer,noise_mask")
                     dict_input['mask_inputs'] = labels_noisemask[b_i:b_i+1]
                 else:
                     raise NotImplementedError
@@ -675,7 +680,7 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
                 batched_input.append(dict_input)
 
             with torch.no_grad():
-                batched_output, interm_embeddings = sam(batched_input, multimask_output=False)
+                batched_output, interm_embeddings = sam(batched_input, multimask_output=False)  # batched_output
             
             batch_len = len(batched_output)
             encoder_embedding = torch.cat([batched_output[i_l]['encoder_embedding'] for i_l in range(batch_len)], dim=0)
@@ -694,19 +699,19 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
             )
 
 
-            # '''
-            # 就是看看这个质量如何 要删掉
-            # '''
+            
             ori_gt_path = data_val['ori_gt_path'][0]
             pattern = r'/([^/]+)\.png$'
             match = re.search(pattern, ori_gt_path).group(1)
             image_name = "image_"+match+".png"
-            # save_path = "/data/hotaru/projects/sam-hq/train/save_output/mask-contour/"
-            # masks_hq  = cv2.imread(save_path+image_name, cv2.IMREAD_GRAYSCALE)
+            # '''
+            # 就是看看这个质量如何 要删掉,记得膨胀像素
+            # '''
+            # maskSUBcontour_path = "/data/hotaru/projects/sam-hq/train/save_output/540images/mask-contour/"
+            # image_name = ""+match+".png"
+            # masks_hq  = cv2.imread(maskSUBcontour_path+image_name, cv2.IMREAD_GRAYSCALE)
             # masks_hq[masks_hq==1] = 0  #啊啊啊太蠢了
             # masks_hq = torch.from_numpy(masks_hq).unsqueeze(0).unsqueeze(0).cuda().float()
-            # print(masks_hq.shape)
-            # print(labels_ori.shape)
             # '''
             # 以上
             # '''
@@ -727,7 +732,7 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
 
 
             measure_process_inst = process(masks_hq,labels_ori,"?") #1,600,600
-            # measure_process_inst = dilate_instance_map(measure_process_inst,2) #膨胀三个像素
+            # measure_process_inst = dilate_instance_map(measure_process_inst,1) #膨胀三个像素
             measure_process_inst = relabel_instances(measure_process_inst)#发现实例id不连续，大概是数组越界报错的原因，额外加处理一步
             inst_labels_ori = relabel_instances(inst_labels_ori.cpu().numpy())
             inst_labels_ori = torch.from_numpy(inst_labels_ori)
@@ -755,7 +760,7 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
                 
 
                 #为应用后处理额外保存的二值图mask结果
-                # binary_save_path = "/data/hotaru/projects/sam-hq/train/save_output/mask/"
+                # binary_save_path = args.bi_output+'/'
                 # # plt.imshow(origin_process_pred.cpu().detach().numpy()[0][0]>0)
                 # origin_process_pred_cpu = origin_process_pred.cpu().detach()
                 # # 2. 转换为 NumPy 数组
@@ -779,7 +784,7 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
                 pred_map = torch.squeeze(measure_process_inst).cpu().numpy()
                 true_map = torch.squeeze(inst_labels_ori).cpu().numpy()
                 result_img = compare_and_color(pred_map, true_map)
-                if batched_input[0]['point_coords'] is not None:
+                if 'point_coords' in batched_input[0].keys() and batched_input[0]['point_coords'] is not None:
                     for input_data in batched_input:
                         point_coords = input_data['point_coords']
                         for point in point_coords.numpy()[0]:
