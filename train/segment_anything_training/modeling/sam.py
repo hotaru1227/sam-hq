@@ -14,6 +14,11 @@ from .image_encoder import ImageEncoderViT
 from .mask_decoder import MaskDecoder
 from .prompt_encoder import PromptEncoder
 
+from PIL import Image
+import matplotlib.pyplot as plt
+import numpy as np
+from torchvision import transforms
+from scipy.optimize import linear_sum_assignment
 
 class Sam(nn.Module):
     mask_threshold: float = 0.0
@@ -97,6 +102,83 @@ class Sam(nn.Module):
         input_images = torch.stack([self.preprocess(x["image"]) for x in batched_input], dim=0)
         
         image_embeddings, interm_embeddings = self.image_encoder(input_images)
+        
+        pil_image = transforms.ToPILImage()(batched_input[0]['image'])  # 原始图像去除批次维度并转换为 PIL 图像
+        tmp_save_path = "/data/hotaru/projects/sam-hq/train/segment_anything_training/tmp_output/"
+
+
+        reference_img = Image.open("/data/hotaru/projects/sam-hq/data/cpm17/reference_08/cropped_image.jpg") 
+        reference_mask = Image.open("/data/hotaru/projects/sam-hq/data/cpm17/reference_08/cropped_binary.png") 
+        
+        
+        np_mask = np.array(reference_mask) 
+        tensor_mask = torch.from_numpy(np_mask).unsqueeze(0).unsqueeze(0) # (1, 1, 1024, 1024)
+
+        # 使用 torchvision.transforms 进行 resize
+        resize_transform = transforms.Resize((64, 64))
+        resized_tensor_mask = resize_transform(tensor_mask).squeeze(0).squeeze(0)  # 变为 (64, 64)
+        flattened_tensor_mask = resized_tensor_mask.view(-1) #4096
+        
+
+        np_reference_img = np.array(reference_img)   # 将PIL Image对象转换为numpy数组，并指定数据类型为uint8（0-255）  
+        tensor_reference_img= torch.from_numpy(np_reference_img.astype(np.float32) / 255.0)  # 如果需要，将numpy数组中的值缩放到0-1的范围（PyTorch通常期望输入是浮点数且范围在0-1）  
+        tensor_reference_img = (tensor_reference_img * 5) - 2
+        # 添加批次维度，并调整维度顺序以匹配PyTorch的NCHW（批次大小, 通道, 高度, 宽度）格式  
+        # 注意：PyTorch期望通道数在第一个维度之后，但在numpy数组中是最后一个维度  
+        tensor_reference_img = tensor_reference_img.permute(2, 0, 1).unsqueeze(0).to(torch.float32)    # NCHW  
+        reference_embedding,_ = self.image_encoder(tensor_reference_img.cuda())
+
+        image_embeddings_flat = image_embeddings.view(1,256, -1)[0]
+        reference_embedding_flat = reference_embedding.view(1,256, -1)[0]
+        
+        S = reference_embedding_flat.t() @ image_embeddings_flat # ns*N, N
+        C = (1 - S) / 2  # distance
+
+        S_forward = S[flattened_tensor_mask.flatten().bool()] # n,4096
+        
+
+        indices_forward = linear_sum_assignment(S_forward.cpu().numpy(), maximize=True)
+        indices_forward = [torch.as_tensor(index, dtype=torch.int64, device=self.device) for index in indices_forward]
+        sim_scores_f = S_forward[indices_forward[0], indices_forward[1]]
+        indices_mask = flattened_tensor_mask.flatten().nonzero()[:, 0]
+        
+        # S_reverse = S.t()[indices_forward[1]]
+        # indices_reverse = linear_sum_assignment(S_reverse.cpu(), maximize=True)
+        # indices_reverse = [torch.as_tensor(index, dtype=torch.int64, device=self.device) for index in indices_reverse]
+        # retain_ind = torch.isin(indices_reverse[1].cpu(), indices_mask)
+        # if not (retain_ind == False).all().item():
+        #     indices_forward = [indices_forward[0][retain_ind], indices_forward[1][retain_ind]]
+        #     sim_scores_f = sim_scores_f[retain_ind]
+        # inds_matched, sim_matched = indices_forward, sim_scores_f
+
+        topk_values, topk_indices = torch.topk(sim_scores_f, 256)
+        selected_rows = torch.index_select(S_forward, 0, topk_indices)
+
+        S_forward_selected_reshaped = selected_rows.view(-1, 64, 64)
+        S_forward_selected_embedding = S_forward_selected_reshaped.unsqueeze(0)
+
+        # 可视化大集合
+        # pil_image.save(tmp_save_path+"input_images.jpg") #原始图像
+        # mask_resized_image = Image.fromarray((resized_tensor_mask.numpy()))
+        # mask_resized_image.save(tmp_save_path+'mask_resized_image.jpg')
+
+        # S_forward_reshaped_image_0 = Image.fromarray((S_forward_reshaped[0].cpu().numpy()*255).astype(np.uint8))
+        # S_forward_reshaped_image_0.save(tmp_save_path+"S_forward_reshaped_image[0].jpg")
+        # S_forward_reshaped_image_1 = Image.fromarray((S_forward_reshaped[1].cpu().numpy()*255).astype(np.uint8))
+        # S_forward_reshaped_image_1.save(tmp_save_path+"S_forward_reshaped_image[1].jpg")
+        # S_forward_reshaped_image_2 = Image.fromarray((S_forward_reshaped[2].cpu().numpy()*255).astype(np.uint8))
+        # S_forward_reshaped_image_2.save(tmp_save_path+"S_forward_reshaped_image[2].jpg")
+
+        # def visualize_matrix(matrix, title, filename):
+        #     plt.figure(figsize=(8, 6))
+        #     plt.imshow(matrix.cpu(), cmap='viridis')
+        #     plt.savefig(tmp_save_path+filename)
+        #     plt.close()
+        # visualize_matrix(image_embeddings_flat, 'Image Embeddings', 'image_embeddings.png')
+        # visualize_matrix(reference_embedding_flat, 'Reference Embedding', 'reference_embedding.png')
+        # visualize_matrix(S, 'Similarity Matrix S', 'similarity_matrix.png')
+        # visualize_matrix(C, 'Distance Matrix C', 'distance_matrix.png')
+
 
         outputs = []
         for image_record, curr_embedding in zip(batched_input, image_embeddings):
@@ -136,7 +218,7 @@ class Sam(nn.Module):
                 }
             )
 
-        return outputs, interm_embeddings
+        return outputs, interm_embeddings , S_forward_selected_embedding
 
     def postprocess_masks(
         self,

@@ -649,9 +649,9 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
                 dict_input['image'] = input_image 
                 # input_type = random.choice(input_keys)
                 labels_box = misc.masks_to_boxes(labels_val[:,0,:,:])
-                input_type = "point"
+                input_type = "box"
                 if input_type == 'box':
-                    print("infer,box")
+                    # print("infer,box")
                     dict_input['boxes'] = labels_box[b_i:b_i+1]
                 elif input_type == 'point':
                     print("infer,point")
@@ -680,19 +680,20 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
                 batched_input.append(dict_input)
 
             with torch.no_grad():
-                batched_output, interm_embeddings = sam(batched_input, multimask_output=False)  # batched_output
+                batched_output, interm_embeddings , S_forward_selected_embedding = sam(batched_input, multimask_output=False)  # batched_output
             
             batch_len = len(batched_output)
             encoder_embedding = torch.cat([batched_output[i_l]['encoder_embedding'] for i_l in range(batch_len)], dim=0)
             image_pe = [batched_output[i_l]['image_pe'] for i_l in range(batch_len)]
             sparse_embeddings = [batched_output[i_l]['sparse_embeddings'] for i_l in range(batch_len)]
             dense_embeddings = [batched_output[i_l]['dense_embeddings'] for i_l in range(batch_len)]
-            
+            tmp_embedding = dense_embeddings[0]+S_forward_selected_embedding/10
+            # tmp_embedding = dense_embeddings[0]
             masks_sam, masks_hq = net(
                 image_embeddings=encoder_embedding,
                 image_pe=image_pe,
                 sparse_prompt_embeddings=sparse_embeddings,
-                dense_prompt_embeddings=dense_embeddings,
+                dense_prompt_embeddings=tmp_embedding,
                 multimask_output=False,
                 hq_token_only=False,
                 interm_embeddings=interm_embeddings,
@@ -751,7 +752,7 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
                 masks_hq_vis = (F.interpolate(measure_process_inst.float().unsqueeze(0).detach(), (1024, 1024), mode="bilinear", align_corners=False) > 0).cpu()
                 for ii in range(len(imgs)):
                     base = data_val['imidx'][ii].item()
-                    print('base:', base)
+                    # print('base:', base)
                     save_base = os.path.join(args.output, image_name)
                     imgs_ii = imgs[ii].astype(dtype=np.uint8)
                     show_iou = torch.tensor([iou.item()])
@@ -797,6 +798,7 @@ def evaluate(args, net, sam, valid_dataloaders, visualize=False):
             "dice_"+str(k): dice,"aji_"+str(k): aji,"aji_p_"+str(k): aji_p,"dq_"+str(k): dq,"sq_"+str(k): sq,"pq_"+str(k): pq,
                             "dice_i_"+str(k): dice_inst,"aji_i_"+str(k): aji_inst,"aji_p_i_"+str(k): aji_p_inst,"dq_i_"+str(k): dq_inst,"sq_i_"+str(k): sq_inst,"pq_i_"+str(k): pq_inst}
             # loss_dict_reduced = misc.reduce_dict(loss_dict)
+            print(image_name,dice_inst,aji_inst,aji_p_inst,dq_inst,sq_inst,pq_inst)
             metric_logger.update(**loss_dict)
             
 
